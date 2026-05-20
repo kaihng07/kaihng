@@ -102,6 +102,8 @@ let mongoClient: MongoClient | null = null;
 let dbConnected = false;
 let dbName = '';
 let dbError: string | null = null;
+let lastConnectAttempt = 0;
+const CONNECT_COOLDOWN = 20000; // 20 seconds cooldown before retrying connection automatically
 
 // Initial high-quality in-memory contacts
 let memContacts: any[] = [
@@ -178,6 +180,8 @@ async function connectMongo() {
     console.log("Memory mode active: MONGODB_URI or MANGODB_URI is not set.");
     return;
   }
+  
+  lastConnectAttempt = Date.now();
   try {
     mongoClient = new MongoClient(mongoUri, {
       connectTimeoutMS: 5000,
@@ -213,12 +217,20 @@ function getContactsCollection() {
 
 // Middleware to guarantee MongoDB connection matching serverless lifecycles
 app.use('/api', async (req, res, next) => {
+  const wantsReconnect = req.query.reconnect === 'true';
+  const isCooldownActive = (Date.now() - lastConnectAttempt) < CONNECT_COOLDOWN;
+
   if (!dbConnected && mongoUri) {
-    console.log("[CARDNET] Lazily connecting to MongoDB for incoming serverless request...");
-    try {
-      await connectMongo();
-    } catch (e) {
-      console.error("[CARDNET] Lazy connection during request failed:", e);
+    if (wantsReconnect || !isCooldownActive) {
+      console.log(`[CARDNET] Lazily connecting to MongoDB for incoming serverless request (wantsReconnect=${wantsReconnect}, cooldownActive=${isCooldownActive})...`);
+      try {
+        await connectMongo();
+      } catch (e) {
+        console.error("[CARDNET] Lazy connection during request failed:", e);
+      }
+    } else {
+      // Quietly fall back, logging that we are skipping the connection overhead
+      console.log(`[CARDNET] Skipping connection attempt: cooling down. Serving instantly from fallback InMemoryStore.`);
     }
   }
   next();

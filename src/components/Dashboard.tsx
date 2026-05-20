@@ -74,6 +74,17 @@ export default function Dashboard({ config, loadingConfig, onRefreshConfig }: Da
     }
   };
 
+  const handleManualRetry = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await fetch('/api/config?reconnect=true');
+    } catch (e) {
+      console.warn("Pre-reconnect hand-shake failed", e);
+    }
+    await fetchContacts();
+  };
+
   // Delete Action
   const handleDelete = async (id: string) => {
     if (!id) return;
@@ -262,7 +273,7 @@ export default function Dashboard({ config, loadingConfig, onRefreshConfig }: Da
               <p className="text-xs text-rose-300 mt-1.5 leading-relaxed">{error}</p>
               <div className="mt-5 flex justify-center gap-3">
                 <button
-                  onClick={fetchContacts}
+                  onClick={handleManualRetry}
                   className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl transition shadow-lg shadow-rose-600/15 cursor-pointer"
                   id="dashboard-retry-btn"
                 >
