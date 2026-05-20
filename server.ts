@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { MongoClient, ObjectId } from 'mongodb';
 import dotenv from 'dotenv';
 
@@ -8,18 +7,6 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
-
-// Resolve paths for ESM / CJS dual-mode compatibility safely without runtime crashes
-let currentDir = '';
-try {
-  if (typeof __dirname !== 'undefined' && __dirname) {
-    currentDir = __dirname;
-  } else {
-    currentDir = path.dirname(fileURLToPath(import.meta.url));
-  }
-} catch (e) {
-  currentDir = process.cwd();
-}
 
 // Allow larger uploads for base64 avatars (< 1.5MB requested, setting threshold to 10MB to be safe)
 app.use(express.json({ limit: '10mb' }));
@@ -467,7 +454,8 @@ async function startServer() {
 
   // Vite middleware integration
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import('vite');
+    const viteMod = 'vite';
+    const { createServer: createViteServer } = await import(viteMod);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

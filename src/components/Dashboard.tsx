@@ -62,7 +62,11 @@ export default function Dashboard({ config, loadingConfig, onRefreshConfig }: Da
     try {
       const res = await fetch('/api/contacts');
       if (!res.ok) {
-        throw new Error(`Failed to retrieve contacts (${res.status})`);
+        let msg = '';
+        try {
+          msg = await res.text();
+        } catch(e) {}
+        throw new Error(`Failed to retrieve contacts (${res.status}): ${msg}`);
       }
       const data = await res.json();
       setContacts(data);
