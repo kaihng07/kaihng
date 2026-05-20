@@ -194,6 +194,19 @@ function getContactsCollection() {
   return null;
 }
 
+// Middleware to guarantee MongoDB connection matching serverless lifecycles
+app.use('/api', async (req, res, next) => {
+  if (!dbConnected && mongoUri) {
+    console.log("[CARDNET] Lazily connecting to MongoDB for incoming serverless request...");
+    try {
+      await connectMongo();
+    } catch (e) {
+      console.error("[CARDNET] Lazy connection during request failed:", e);
+    }
+  }
+  next();
+});
+
 // 1. GET /api/config
 app.get('/api/config', (req, res) => {
   res.json({
