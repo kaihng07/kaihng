@@ -145,7 +145,33 @@ let memContacts: any[] = [
   }
 ];
 
-// Connection management
+// Connection management and error handler
+function handleDatabaseError(err: any) {
+  dbConnected = false;
+  let errMsg = err.message || String(err);
+  
+  if (errMsg.toLowerCase().includes('auth') || errMsg.toLowerCase().includes('password') || errMsg.toLowerCase().includes('credential') || errMsg.toLowerCase().includes('fail')) {
+    const specialWarning = checkUnescapedSpecialChars(mongoUri);
+    if (specialWarning) {
+      errMsg += `. ${specialWarning}`;
+    } else {
+      errMsg += ". Hint: Please verify that your MongoDB username and password are correct, and that they correspond to an active Database User in your MongoDB Atlas Security settings. Also ensure that you have configured your Atlas IP Whitelist (Network Access) to allow connections from anywhere (0.0.0.0/0) so that your isolated App environment can access the cluster.";
+    }
+  }
+  
+  dbError = errMsg;
+  console.error(`[CARDNET] MongoDB database error occurred. Falling back to memory mode.`, dbError);
+  
+  if (mongoClient) {
+    try {
+      mongoClient.close();
+    } catch (e) {
+      // ignore close errors
+    }
+    mongoClient = null;
+  }
+}
+
 async function connectMongo() {
   if (!mongoUri) {
     dbError = "MONGODB_URI or MANGODB_URI environment variable is missing";
@@ -158,26 +184,16 @@ async function connectMongo() {
       serverSelectionTimeoutMS: 5000
     });
     await mongoClient.connect();
+    
+    // CRITICAL: Force authentication and pool handshake verification immediately by executing a ping command
+    await mongoClient.db().command({ ping: 1 });
+    
     dbConnected = true;
     dbName = mongoClient.db().databaseName || 'cardnet';
     dbError = null;
     console.log(`Connected to MongoDB database: "${dbName}" using ${mongoUriSource}`);
   } catch (err: any) {
-    dbConnected = false;
-    let errMsg = err.message || String(err);
-    
-    // Add intelligent troubleshooting instructions for credential/auth failures
-    if (errMsg.toLowerCase().includes('auth') || errMsg.toLowerCase().includes('password') || errMsg.toLowerCase().includes('credential') || errMsg.toLowerCase().includes('fail')) {
-      const specialWarning = checkUnescapedSpecialChars(mongoUri);
-      if (specialWarning) {
-        errMsg += `. ${specialWarning}`;
-      } else {
-        errMsg += ". Hint: Please verify that your MongoDB username and password are correct, and that they correspond to an active Database User in your MongoDB Atlas Security settings. Also ensure that you have configured your Atlas IP Whitelist (Network Access) to allow connections from anywhere (0.0.0.0/0) so that your isolated App environment can access the cluster.";
-      }
-    }
-    
-    dbError = errMsg;
-    console.error(`[CARDNET] MongoDB connection via ${mongoUriSource} failed.`, dbError);
+    handleDatabaseError(err);
   }
 }
 
@@ -187,7 +203,8 @@ function getContactsCollection() {
     try {
       return mongoClient.db().collection('contacts');
     } catch (e) {
-      console.error("Could not obtain database collection, falling back to memory.", e);
+      console.error("Could not obtain database collection, handling error and falling back to memory.", e);
+      handleDatabaseError(e);
       return null;
     }
   }
@@ -229,15 +246,20 @@ app.get('/api/contacts', async (req, res) => {
   try {
     const col = getContactsCollection();
     if (col) {
-      const contacts = await col.find({}).sort({ createdAt: -1 }).toArray();
-      res.json(contacts);
-    } else {
-      // Memory Store sorted by date desc
-      const sorted = [...memContacts].sort((a, b) => 
-        new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-      );
-      res.json(sorted);
+      try {
+        const contacts = await col.find({}).sort({ createdAt: -1 }).toArray();
+        return res.json(contacts);
+      } catch (queryErr: any) {
+        handleDatabaseError(queryErr);
+        // Fall through to memory store gracefully
+      }
     }
+    
+    // Memory Store sorted by date desc
+    const sorted = [...memContacts].sort((a, b) => 
+      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+    res.json(sorted);
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to retrieve contacts" });
   }
@@ -247,7 +269,6 @@ app.get('/api/contacts', async (req, res) => {
 app.get('/api/contacts/:id', async (req, res) => {
   const { id } = req.params;
 
-  // Let's check DB status vs memory. If DB is active, validate schema immediately
   const col = getContactsCollection();
   if (col) {
     if (!isValidObjectId(id)) {
@@ -258,18 +279,19 @@ app.get('/api/contacts/:id', async (req, res) => {
       if (!contact) {
         return res.status(404).json({ error: "Contact not found" });
       }
-      res.json(contact);
+      return res.json(contact);
     } catch (err: any) {
-      res.status(500).json({ error: err.message || "Database lookup error" });
+      handleDatabaseError(err);
+      // Fall through to memory lookup
     }
-  } else {
-    // Memory Store lookup
-    const contact = memContacts.find(c => c._id === id);
-    if (!contact) {
-      return res.status(404).json({ error: "Contact not found" });
-    }
-    res.json(contact);
   }
+
+  // Memory Store lookup
+  const contact = memContacts.find(c => c._id === id);
+  if (!contact) {
+    return res.status(404).json({ error: "Contact not found" });
+  }
+  res.json(contact);
 });
 
 // 4. POST /api/contacts
@@ -302,15 +324,20 @@ app.post('/api/contacts', async (req, res) => {
 
     const col = getContactsCollection();
     if (col) {
-      const result = await col.insertOne(payload);
-      res.status(201).json({ ...payload, _id: result.insertedId.toString() });
-    } else {
-      // Memory allocation
-      const mockId = new ObjectId().toString();
-      const newContact = { ...payload, _id: mockId };
-      memContacts.push(newContact);
-      res.status(201).json(newContact);
+      try {
+        const result = await col.insertOne(payload);
+        return res.status(201).json({ ...payload, _id: result.insertedId.toString() });
+      } catch (err: any) {
+        handleDatabaseError(err);
+        // Fall through to memory
+      }
     }
+
+    // Memory allocation
+    const mockId = new ObjectId().toString();
+    const newContact = { ...payload, _id: mockId };
+    memContacts.push(newContact);
+    res.status(201).json(newContact);
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to create contact" });
   }
@@ -320,10 +347,6 @@ app.post('/api/contacts', async (req, res) => {
 app.put('/api/contacts/:id', async (req, res) => {
   const { id } = req.params;
   const col = getContactsCollection();
-
-  if (col && !isValidObjectId(id)) {
-    return res.status(400).json({ error: "Invalid contact ID format to update Database" });
-  }
 
   try {
     const { firstName, lastName, email, phone, title, organization, website, address, avatar, socials } = req.body;
@@ -352,29 +375,37 @@ app.put('/api/contacts/:id', async (req, res) => {
     };
 
     if (col) {
-      const result = await col.findOneAndUpdate(
-        { _id: new ObjectId(id) },
-        { $set: updatedData },
-        { returnDocument: 'after' }
-      );
-      if (!result) {
-        return res.status(404).json({ error: "Contact not found" });
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({ error: "Invalid contact ID format to update Database" });
       }
-      res.json(result);
-    } else {
-      const index = memContacts.findIndex(c => c._id === id);
-      if (index === -1) {
-        return res.status(404).json({ error: "Contact not found" });
+      try {
+        const result = await col.findOneAndUpdate(
+          { _id: new ObjectId(id) },
+          { $set: updatedData },
+          { returnDocument: 'after' }
+        );
+        if (!result) {
+          return res.status(404).json({ error: "Contact not found" });
+        }
+        return res.json(result);
+      } catch (err: any) {
+        handleDatabaseError(err);
+        // Fall through to memory
       }
-      const existing = memContacts[index];
-      const updatedContact = {
-        ...existing,
-        ...updatedData,
-        _id: id // preserve ID
-      };
-      memContacts[index] = updatedContact;
-      res.json(updatedContact);
     }
+
+    const index = memContacts.findIndex(c => c._id === id);
+    if (index === -1) {
+      return res.status(404).json({ error: "Contact not found" });
+    }
+    const existing = memContacts[index];
+    const updatedContact = {
+      ...existing,
+      ...updatedData,
+      _id: id // preserve ID
+    };
+    memContacts[index] = updatedContact;
+    res.json(updatedContact);
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to update contact" });
   }
@@ -385,25 +416,29 @@ app.delete('/api/contacts/:id', async (req, res) => {
   const { id } = req.params;
   const col = getContactsCollection();
 
-  if (col && !isValidObjectId(id)) {
-    return res.status(400).json({ error: "Invalid contact ID format to delete from Database" });
-  }
-
   try {
     if (col) {
-      const result = await col.deleteOne({ _id: new ObjectId(id) });
-      if (result.deletedCount === 0) {
-        return res.status(404).json({ error: "Contact not found" });
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({ error: "Invalid contact ID format to delete from Database" });
       }
-      res.json({ success: true });
-    } else {
-      const index = memContacts.findIndex(c => c._id === id);
-      if (index === -1) {
-        return res.status(404).json({ error: "Contact not found" });
+      try {
+        const result = await col.deleteOne({ _id: new ObjectId(id) });
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ error: "Contact not found" });
+        }
+        return res.json({ success: true });
+      } catch (err: any) {
+        handleDatabaseError(err);
+        // Fall through to memory
       }
-      memContacts.splice(index, 1);
-      res.json({ success: true });
     }
+
+    const index = memContacts.findIndex(c => c._id === id);
+    if (index === -1) {
+      return res.status(404).json({ error: "Contact not found" });
+    }
+    memContacts.splice(index, 1);
+    res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to delete contact" });
   }
