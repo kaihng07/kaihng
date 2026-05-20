@@ -2,7 +2,6 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { MongoClient, ObjectId } from 'mongodb';
-import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -184,8 +183,8 @@ async function connectMongo() {
   lastConnectAttempt = Date.now();
   try {
     mongoClient = new MongoClient(mongoUri, {
-      connectTimeoutMS: 5000,
-      serverSelectionTimeoutMS: 5000
+      connectTimeoutMS: 3000,
+      serverSelectionTimeoutMS: 3000
     });
     await mongoClient.connect();
     
@@ -458,10 +457,17 @@ app.delete('/api/contacts/:id', async (req, res) => {
 
 // Async wrapper to avoid Top-Level Await inside CJS compiled target
 async function startServer() {
-  await connectMongo();
+  // Connect asynchronously in standalone mode without blocking boot. 
+  // On Vercel, lazy middleware will connect on the first incoming request.
+  if (!process.env.VERCEL) {
+    connectMongo().catch((err) => {
+      console.error("[CARDNET] Standalone server background connection failed:", err);
+    });
+  }
 
   // Vite middleware integration
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
