@@ -1,0 +1,6 @@
+{
+  "name": "CARDNET",
+  "description": "Enterprise-grade digital business card management system (vCard) with elegant public sharing, real-time preview, QR-code generator, and dual database-memory storage modes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
